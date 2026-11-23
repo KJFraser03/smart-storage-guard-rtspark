@@ -1,0 +1,41 @@
+# Smart Storage Guard — Real-Time Edge AI on STM32F407 (RT-Spark)
+
+An embedded Edge AI system built on the **RT-Spark (STM32F407ZGT6)** development board running **FreeRTOS**. It performs real-time multi-sensor acquisition and on-device Multi-Layer Perceptron (MLP) inference to detect storage hazards without cloud connectivity.
+
+## Monitored Storage States
+* **`0` — `SAFE_STORAGE`:** Normal resting condition (stable temperature/humidity, closed/dark enclosure, stationary).
+* **`1` — `ENV_SPOILAGE_RISK`:** Elevated humidity and temperature conditions indicating potential spoilage.
+* **`2` — `LID_LEFT_OPEN`:** Sudden ambient light spike detected by the optical sensor.
+* **`3` — `TAMPER_OR_FALL`:** Abnormal tilt, vibration, or impact detected by the 6-axis IMU.
+
+## Hardware & Software Stack
+* **Microcontroller:** STM32F407ZGT6 (ARM Cortex-M4F, RT-Spark Board)
+* **RTOS:** FreeRTOS (multi-task scheduling for sensor polling, inference, and UART telemetry)
+* **Sensors (Software I2C):**
+  * **AHT20:** Ambient temperature (°C) and relative humidity (%)
+  * **AP3216C:** Ambient light sensor (ALS) and proximity sensor (PS)
+  * **ICM20608:** 3-axis accelerometer (g) and 3-axis gyroscope (°/s)
+* **Telemetry:** Interrupt-driven USART1 (`115200` baud)
+* **Edge AI Pipeline:** Python (`scikit-learn`, `pandas`, `numpy`, `pyserial`) for dataset capture, model training (`6 -> 12 -> 4` MLP), and C header weight export (`include/trained_weights.h`).
+
+## Repository Structure
+```text
+smart-storage-guard/
+├── dataset/
+│   └── board_sensor_data.csv    # Labeled multi-class sensor dataset captured from hardware
+├── include/
+│   ├── edge_ai.h                # Embedded MLP inference declarations
+│   ├── sensors.h                # Sensor driver interfaces
+│   ├── soft_i2c.h               # Bit-banged I2C bus interface
+│   └── trained_weights.h        # Auto-generated C arrays of trained MLP weights & scalers
+├── lib/
+│   └── FreeRTOS/                # FreeRTOS kernel source
+├── src/
+│   ├── edge_ai.c                # Forward-pass neural network inference in C
+│   ├── main.c                   # FreeRTOS task setup, USART1 telemetry & alert logic
+│   ├── sensors.c                # AHT20, AP3216C, and ICM20608 drivers
+│   └── soft_i2c.c               # Software I2C implementation
+├── training/
+│   ├── capture_csv.py           # Automated serial data logger for labeled classes
+│   └── train_model.py           # Trains MLP, compares vs. baseline, exports C weights
+└── platformio.ini               # PlatformIO build & upload configuration
