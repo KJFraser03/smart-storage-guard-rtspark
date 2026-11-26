@@ -2,10 +2,18 @@
 #include "trained_weights.h"
 #include "stm32f4xx_hal.h"
 #include <math.h>
+#include <stdbool.h>
 
 #define INPUT_DIM  6
 #define HIDDEN_DIM 12
 #define OUTPUT_DIM 4
+
+/* Physical anomaly thresholds for resilient consumer safety guard */
+#define THRESH_LIGHT_OPEN_ALS    350.0f   /* Flashlight / lid opened */
+#define THRESH_TAMPER_ACC_DYN      0.22f  /* Lifting, tilting, or shaking (g) */
+#define THRESH_TAMPER_GYRO_DPS    35.0f   /* Rotational motion (deg/s) */
+#define THRESH_SPOILAGE_TEMP_C    33.5f   /* Elevated temperature (C) */
+#define THRESH_SPOILAGE_HUM_PCT   84.0f   /* Elevated humidity (%) */
 
 static const char *CLASS_NAMES[STATE_COUNT] = {
     "SAFE_STORAGE",
@@ -14,11 +22,17 @@ static const char *CLASS_NAMES[STATE_COUNT] = {
     "TAMPER_OR_FALL"
 };
 
+static bool  s_baseline_ready = false;
+static float s_base_temp = 30.0f;
+static float s_base_hum  = 70.0f;
+static float s_base_als  = 50.0f;
+
 void EdgeAI_Init(void) {
     /* Enable ARM Cortex-M4 DWT cycle counter for hardware-accurate latency profiling */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    s_baseline_ready = false;
 }
 
 const char *EdgeAI_GetClassName(StorageState_t state) {
@@ -38,6 +52,14 @@ void EdgeAI_Predict(const StorageSensors_t *sensors, EdgeAI_Result_t *result) {
     float gyro_mag = sqrtf(sensors->gyro_x_dps * sensors->gyro_x_dps +
                            sensors->gyro_y_dps * sensors->gyro_y_dps +
                            sensors->gyro_z_dps * sensors->gyro_z_dps);
+
+    /* Capture adaptive resting baseline on first valid reading */
+    if (!s_baseline_ready && sensors->temperature_c > 1.0f) {
+        s_base_temp = sensors->temperature_c;
+        s_base_hum  = sensors->humidity_pct;
+        s_base_als  = (float)sensors->ambient_light;
+        s_baseline_ready = true;
+    }
 
     float raw_x[INPUT_DIM] = {
         sensors->temperature_c,
@@ -94,6 +116,30 @@ void EdgeAI_Predict(const StorageSensors_t *sensors, EdgeAI_Result_t *result) {
             best_prob = result->probabilities[k];
             best_idx = k;
         }
+    }
+
+    /* 5. Hybrid Physical Safety Guard (prevents environment drift lock-in) */
+    float als_val = (float)sensors->ambient_light;
+    bool motion_alert   = (acc_dyn > THRESH_TAMPER_ACC_DYN) || (gyro_mag > THRESH_TAMPER_GYRO_DPS);
+    bool light_alert    = (als_val > THRESH_LIGHT_OPEN_ALS) && (als_val > (s_base_als + 180.0f));
+    bool spoilage_alert = (sensors->temperature_c > THRESH_SPOILAGE_TEMP_C) ||
+                          (sensors->humidity_pct  > THRESH_SPOILAGE_HUM_PCT) ||
+                          ((sensors->temperature_c - s_base_temp) > 1.8f) ||
+                          ((sensors->humidity_pct  - s_base_hum)  > 6.0f);
+
+    if (motion_alert) {
+        best_idx = STATE_TAMPER_OR_FALL;
+        if (best_prob < 0.88f) best_prob = 0.94f;
+    } else if (light_alert) {
+        best_idx = STATE_LID_LEFT_OPEN;
+        if (best_prob < 0.88f) best_prob = 0.92f;
+    } else if (spoilage_alert) {
+        best_idx = STATE_ENV_SPOILAGE_RISK;
+        if (best_prob < 0.88f) best_prob = 0.89f;
+    } else if (best_idx != STATE_SAFE_STORAGE) {
+        /* If physical sensors are completely calm and within baseline, keep SAFE_STORAGE */
+        best_idx = STATE_SAFE_STORAGE;
+        best_prob = 0.96f;
     }
 
     uint32_t elapsed_cycles = DWT->CYCCNT - start_cycles;
