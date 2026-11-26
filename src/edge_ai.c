@@ -12,8 +12,8 @@
 #define THRESH_LIGHT_OPEN_ALS    350.0f   /* Flashlight / lid opened */
 #define THRESH_TAMPER_ACC_DYN      0.22f  /* Lifting, tilting, or shaking (g) */
 #define THRESH_TAMPER_GYRO_DPS    35.0f   /* Rotational motion (deg/s) */
-#define THRESH_SPOILAGE_TEMP_C    33.5f   /* Elevated temperature (C) */
-#define THRESH_SPOILAGE_HUM_PCT   84.0f   /* Elevated humidity (%) */
+#define THRESH_SPOILAGE_TEMP_C    32.2f   /* Absolute temperature threshold (C) */
+#define THRESH_SPOILAGE_HUM_PCT   80.0f   /* Absolute humidity threshold (%) */
 
 static const char *CLASS_NAMES[STATE_COUNT] = {
     "SAFE_STORAGE",
@@ -124,8 +124,8 @@ void EdgeAI_Predict(const StorageSensors_t *sensors, EdgeAI_Result_t *result) {
     bool light_alert    = (als_val > THRESH_LIGHT_OPEN_ALS) && (als_val > (s_base_als + 180.0f));
     bool spoilage_alert = (sensors->temperature_c > THRESH_SPOILAGE_TEMP_C) ||
                           (sensors->humidity_pct  > THRESH_SPOILAGE_HUM_PCT) ||
-                          ((sensors->temperature_c - s_base_temp) > 1.8f) ||
-                          ((sensors->humidity_pct  - s_base_hum)  > 6.0f);
+                          ((sensors->temperature_c - s_base_temp) > 0.5f) ||
+                          ((sensors->humidity_pct  - s_base_hum)  > 2.0f);
 
     if (motion_alert) {
         best_idx = STATE_TAMPER_OR_FALL;
