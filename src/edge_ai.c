@@ -12,8 +12,8 @@
 #define THRESH_LIGHT_OPEN_ALS    350.0f   /* Flashlight / lid opened */
 #define THRESH_TAMPER_ACC_DYN      0.22f  /* Lifting, tilting, or shaking (g) */
 #define THRESH_TAMPER_GYRO_DPS    35.0f   /* Rotational motion (deg/s) */
-#define THRESH_SPOILAGE_TEMP_C    32.2f   /* Absolute temperature threshold (C) */
-#define THRESH_SPOILAGE_HUM_PCT   80.0f   /* Absolute humidity threshold (%) */
+#define THRESH_SPOILAGE_TEMP_C    33.2f   /* Absolute temperature threshold (C) */
+#define THRESH_SPOILAGE_HUM_PCT   82.0f   /* Absolute humidity threshold (%) */
 
 static const char *CLASS_NAMES[STATE_COUNT] = {
     "SAFE_STORAGE",
@@ -22,10 +22,11 @@ static const char *CLASS_NAMES[STATE_COUNT] = {
     "TAMPER_OR_FALL"
 };
 
-static bool  s_baseline_ready = false;
-static float s_base_temp = 30.0f;
-static float s_base_hum  = 70.0f;
-static float s_base_als  = 50.0f;
+static bool    s_baseline_ready = false;
+static float   s_base_temp = 31.5f;
+static float   s_base_hum  = 72.0f;
+static float   s_base_als  = 60.0f;
+static uint8_t s_motion_cooldown = 0;     /* Suppress hand-warmth spoilage right after tamper */
 
 void EdgeAI_Init(void) {
     /* Enable ARM Cortex-M4 DWT cycle counter for hardware-accurate latency profiling */
@@ -33,6 +34,7 @@ void EdgeAI_Init(void) {
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     s_baseline_ready = false;
+    s_motion_cooldown = 0;
 }
 
 const char *EdgeAI_GetClassName(StorageState_t state) {
@@ -118,14 +120,22 @@ void EdgeAI_Predict(const StorageSensors_t *sensors, EdgeAI_Result_t *result) {
         }
     }
 
-    /* 5. Hybrid Physical Safety Guard (prevents environment drift lock-in) */
+    /* 5. Hybrid Physical Safety Guard (with post-handling thermal cooldown) */
     float als_val = (float)sensors->ambient_light;
-    bool motion_alert   = (acc_dyn > THRESH_TAMPER_ACC_DYN) || (gyro_mag > THRESH_TAMPER_GYRO_DPS);
-    bool light_alert    = (als_val > THRESH_LIGHT_OPEN_ALS) && (als_val > (s_base_als + 180.0f));
-    bool spoilage_alert = (sensors->temperature_c > THRESH_SPOILAGE_TEMP_C) ||
-                          (sensors->humidity_pct  > THRESH_SPOILAGE_HUM_PCT) ||
-                          ((sensors->temperature_c - s_base_temp) > 0.5f) ||
-                          ((sensors->humidity_pct  - s_base_hum)  > 2.0f);
+    bool motion_alert = (acc_dyn > THRESH_TAMPER_ACC_DYN) || (gyro_mag > THRESH_TAMPER_GYRO_DPS);
+    bool light_alert  = (als_val > THRESH_LIGHT_OPEN_ALS) && (als_val > (s_base_als + 180.0f));
+
+    if (motion_alert) {
+        s_motion_cooldown = 16; /* ~4 seconds (16 x 250 ms) grace period after handling */
+    } else if (s_motion_cooldown > 0) {
+        s_motion_cooldown--;
+    }
+
+    bool spoilage_alert = (s_motion_cooldown == 0) &&
+                          ((sensors->temperature_c > THRESH_SPOILAGE_TEMP_C) ||
+                           (sensors->humidity_pct  > THRESH_SPOILAGE_HUM_PCT) ||
+                           ((sensors->temperature_c - s_base_temp) > 1.2f) ||
+                           ((sensors->humidity_pct  - s_base_hum)  > 4.0f));
 
     if (motion_alert) {
         best_idx = STATE_TAMPER_OR_FALL;
@@ -137,7 +147,6 @@ void EdgeAI_Predict(const StorageSensors_t *sensors, EdgeAI_Result_t *result) {
         best_idx = STATE_ENV_SPOILAGE_RISK;
         if (best_prob < 0.88f) best_prob = 0.89f;
     } else if (best_idx != STATE_SAFE_STORAGE) {
-        /* If physical sensors are completely calm and within baseline, keep SAFE_STORAGE */
         best_idx = STATE_SAFE_STORAGE;
         best_prob = 0.96f;
     }
